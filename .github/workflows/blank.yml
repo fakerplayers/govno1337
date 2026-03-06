@@ -21,70 +21,54 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Download server from Release
+      - name: Download server via GitHub API
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "⬇️ Скачиваем сервер из Release v1.0..."
-          echo "Размер: 1.61 GB, может занять 10-15 минут..."
+          echo "⬇️ Получаем ссылку на скачивание через API..."
           
-          # Используем curl с токеном и таймаутом
+          # Получаем URL для скачивания ассета
+          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/assets/"
+          
+          # Находим ID ассета по имени
+          ASSET_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/v1.0" | \
+            grep -o '"id": [0-9]*' | head -1 | grep -o '[0-9]*')
+          
+          echo "Asset ID: $ASSET_ID"
+          
+          # Скачиваем через API (follow redirects)
           curl -L \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/octet-stream" \
             --max-time 900 \
             --retry 3 \
-            --retry-delay 5 \
-            --progress-bar \
-            "https://github.com/${{ github.repository }}/releases/download/v1.0/linux236dev.1.zip" \
-            -o server.zip 2>&1 | tail -20
+            "https://api.github.com/repos/${{ github.repository }}/releases/assets/${ASSET_ID}" \
+            -o server.zip
           
-          # Проверяем результат
-          if [ ! -f server.zip ]; then
-            echo "❌ Файл не скачался!"
-            exit 1
-          fi
-          
+          # Проверяем
           echo ""
           echo "✅ Скачано:"
           ls -lh server.zip
           file server.zip
           
-          # Проверка размера
-          SIZE=$(stat -c%s server.zip 2>/dev/null || stat -f%z server.zip)
+          SIZE=$(stat -c%s server.zip)
           echo "📦 Размер: $((SIZE / 1024 / 1024)) MB"
           
           if [ $SIZE -lt 1000000000 ]; then
-            echo "❌ Файл слишком маленький!"
-            head -c 500 server.zip
+            echo "❌ Файл слишком маленький! Содержимое:"
+            head -c 200 server.zip
             exit 1
           fi
       
-      - name: Extract ZIP
+      - name: Extract and run
         run: |
           echo "📦 Распаковываем..."
           mkdir -p server
-          unzip -q server.zip -d server/ || {
-            echo "❌ Ошибка распаковки!"
-            echo "Содержимое архива:"
-            unzip -l server.zip | head -20
-            exit 1
-          }
+          unzip -q server.zip -d server/
           
-          echo "✅ Распаковано!"
-          
-          # Ищем путь
           SERVER_PATH=$(find server/ -name "RustDedicated" -type f -exec dirname {} \; | head -1)
-          
-          if [ -z "$SERVER_PATH" ]; then
-            echo "❌ RustDedicated не найден!"
-            echo "Структура:"
-            find server/ -type f -name "*" | head -30
-            exit 1
-          fi
-          
           echo "SERVER_PATH=$SERVER_PATH" >> $GITHUB_ENV
-          echo "📁 Путь: $SERVER_PATH"
           ls -la "$SERVER_PATH/"
       
       - name: Setup Ngrok
@@ -94,18 +78,14 @@ jobs:
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt update && sudo apt install ngrok -y
-          
           ngrok tcp 28015 --authtoken $NGROK_AUTHTOKEN &
           sleep 15
-          
-          TUNNEL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"tcp://[^"]*"' | head -1)
-          echo "🎮 $TUNNEL"
+          echo "🎮 $(curl -s http://localhost:4040/api/tunnels | grep -o 'tcp://[^"]*' | head -1)"
       
       - name: Start Server
         run: |
           cd "$SERVER_PATH"
           chmod +x RustDedicated
-          
           ./RustDedicated -batchmode -nographics \
             +server.port 28015 \
             +server.queryport 28016 \
@@ -115,19 +95,10 @@ jobs:
             +server.maxplayers 2 \
             +server.worldsize 1000 \
             +server.level "Barren" &
-          
           sleep 240
-          
-          if pgrep -f RustDedicated; then
-            echo "✅ Сервер работает!"
-          else
-            echo "❌ Ошибка запуска"
-            exit 1
-          fi
+          pgrep -f RustDedicated && echo "✅ Работает!" || exit 1
           
           DURATION=${{ github.event.inputs.duration || '90' }}
-          echo "⏱️ $DURATION минут..."
-          
           for i in $(seq 1 $DURATION); do
             sleep 60
             [ $((i % 15)) -eq 0 ] && echo "⏳ $i / $DURATION мин"
