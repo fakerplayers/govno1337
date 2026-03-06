@@ -24,49 +24,92 @@ jobs:
       - name: Download server from Release
         run: |
           echo "⬇️ Скачиваем сервер из Release v1.0..."
+          echo "Размер: 1.61 GB, ожидайте 5-10 минут..."
+          
           curl -L \
             --max-time 900 \
             --retry 3 \
+            --retry-delay 10 \
             --progress-bar \
             "https://github.com/fakerplayers/govno1337/releases/download/v1.0/linux236dev.1.zip" \
-            -o server.zip 2>&1 | tail -20
+            -o server.zip 2>&1 | tail -30
           
+          echo ""
+          echo "✅ Скачано:"
           ls -lh server.zip
           file server.zip
           
           SIZE=$(stat -c%s server.zip)
+          echo "📦 Размер: $((SIZE / 1024 / 1024)) MB"
+          
           if [ $SIZE -lt 1000000000 ]; then
             echo "❌ Файл слишком маленький!"
             exit 1
           fi
-          echo "✅ Скачано: $((SIZE / 1024 / 1024)) MB"
+          echo "✅ Готово к распаковке!"
       
       - name: Extract server
         run: |
+          echo "📦 Распаковываем архив..."
           mkdir -p server
           unzip -q server.zip -d server/
-          SERVER_PATH=$(find server/ -name "RustDedicated" -type f -exec dirname {} \; | head -1)
-          echo "SERVER_PATH=$SERVER_PATH" >> $GITHUB_ENV
-          echo "📁 Путь: $SERVER_PATH"
-      
-      - name: Setup Ngrok tunnel
-        env:
-          NGROK_TOKEN: "3AaFVAMGeE8EIfGuE0zcZCKP8Xc_53T7XzATbLepKz3L9KExX"  # <-- Правильный токен
-        run: |
-          echo "🔧 Устанавливаем ngrok..."
-          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt update && sudo apt install ngrok -y
           
-          echo "🌐 Запускаем туннель..."
-          ngrok tcp 28015 --authtoken "$NGROK_TOKEN" &
+          echo "✅ Распаковано!"
+          
+          SERVER_PATH=$(find server/ -name "RustDedicated" -type f -exec dirname {} \; | head -1)
+          
+          if [ -z "$SERVER_PATH" ]; then
+            echo "❌ RustDedicated не найден!"
+            echo "Структура:"
+            find server/ -type f | head -20
+            exit 1
+          fi
+          
+          echo "SERVER_PATH=$SERVER_PATH" >> $GITHUB_ENV
+          echo "📁 Путь к серверу: $SERVER_PATH"
+          ls -la "$SERVER_PATH/"
+      
+      - name: Setup FRP tunnel
+        run: |
+          echo "🔧 Скачиваем FRP..."
+          cd $GITHUB_WORKSPACE
+          
+          wget -q https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_linux_amd64.tar.gz
+          tar -xzf frp_0.52.3_linux_amd64.tar.gz
+          cd frp_0.52.3_linux_amd64
+          
+          echo "🌐 Подключаемся к бесплатному FRP серверу..."
+          
+          # Конфигурация для бесплатного сервера
+          cat > frpc.toml << 'EOF'
+          serverAddr = "frp.freefrp.net"
+          serverPort = 7000
+          auth.token = "freefrp.net"
+          
+          [[proxies]]
+          name = "rust_tcp"
+          type = "tcp"
+          localIP = "127.0.0.1"
+          localPort = 28015
+          remotePort = 28015
+          EOF
+          
+          echo "🚀 Запускаем FRP клиент..."
+          ./frpc -c frpc.toml > frpc.log 2>&1 &
+          FRP_PID=$!
+          echo "FRP PID: $FRP_PID"
+          
           sleep 20
           
-          # Проверяем туннель
-          TUNNEL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"tcp://[^"]*"' | head -1)
+          # Проверяем логи
+          echo "📋 Логи FRP:"
+          tail -n 20 frpc.log
           
-          if [ -z "$TUNNEL" ]; then
-            echo "❌ Туннель не создан!"
+          # Проверяем, что процесс жив
+          if ps -p $FRP_PID > /dev/null; then
+            echo "✅ FRP запущен"
+          else
+            echo "❌ FRP упал!"
             exit 1
           fi
           
@@ -74,17 +117,24 @@ jobs:
           echo "╔════════════════════════════════════════════════╗"
           echo "║  🎮 SERVER READY FOR CONNECTION                ║"
           echo "╠════════════════════════════════════════════════╣"
-          echo "║  $TUNNEL"
+          echo "║  Адрес: frp.freefrp.net:28015                  ║"
+          echo "║  (или проверь логи выше для точного адреса)    ║"
           echo "╚════════════════════════════════════════════════╝"
           echo ""
-          CONNECT_ADDR=$(echo $TUNNEL | sed 's/.*tcp://' | tr -d '"')
-          echo "👉 Введи в консоли Rust: client.connect $CONNECT_ADDR"
+          echo "👉 Введи в консоли Rust: client.connect frp.freefrp.net:28015"
+          
+          # Сохраняем PID для остановки
+          echo "FRP_PID=$FRP_PID" >> $GITHUB_ENV
       
       - name: Start Rust Server
         run: |
           cd "$SERVER_PATH"
-          chmod +x RustDedicated
           
+          # Права на выполнение
+          chmod +x RustDedicated
+          chmod +x runds.sh 2>/dev/null || true
+          
+          echo "🚀 Запускаем сервер..."
           ./RustDedicated -batchmode -nographics \
             +server.port 28015 \
             +server.queryport 28016 \
@@ -92,35 +142,59 @@ jobs:
             +rcon.password "test12345" \
             +rcon.web 1 \
             +server.hostname "GitHub Test 236" \
-            +server.description "Test server" \
+            +server.description "Test server for plugins" \
             +server.maxplayers 2 \
             +server.worldsize 1000 \
             +server.seed 12345 \
-            +server.level "Barren" &
+            +server.level "Barren" \
+            +server.saveinterval 600 &
           
+          SERVER_PID=$!
+          echo "Server PID: $SERVER_PID"
+          
+          # Ждём загрузки (4 минуты)
+          echo "⏳ Ждём загрузку сервера (4 минуты)..."
           sleep 240
           
-          if pgrep -f RustDedicated; then
-            echo "✅ Сервер работает!"
+          # Проверяем, что сервер жив
+          if ps -p $SERVER_PID > /dev/null; then
+            echo "✅ Сервер запущен успешно!"
           else
-            echo "❌ Ошибка запуска"
+            echo "❌ Сервер упал!"
+            tail -n 50 oxide/logs/oxide_*.txt 2>/dev/null || true
             exit 1
           fi
           
-          # Показываем адрес ещё раз
+          # Показываем информацию ещё раз
           echo ""
-          TUNNEL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"tcp://[^"]*"' | head -1)
-          echo "🎮 $TUNNEL"
-          echo "👉 client.connect $(echo $TUNNEL | sed 's/.*tcp://' | tr -d '"')"
+          echo "=== 🎮 ИНФОРМАЦИЯ ДЛЯ ПОДКЛЮЧЕНИЯ ==="
+          echo "Адрес: frp.freefrp.net:28015"
+          echo "👉 client.connect frp.freefrp.net:28015"
+          echo ""
+          
+          # Проверяем логи FRP на случай если порт другой
+          echo "📋 Актуальные логи FRP:"
+          tail -n 10 $GITHUB_WORKSPACE/frp_0.52.3_linux_amd64/frpc.log | grep -E "(proxy|port|started|login)" || true
           
           DURATION=${{ github.event.inputs.duration || '90' }}
-          echo "⏱️ Работаем $DURATION минут..."
+          echo "⏱️ Сервер будет работать $DURATION минут"
+          echo "🎮 Подключайся и тестируй плагин!"
+          echo "⚠️ Авто-выключение через $DURATION минут"
           
+          # Обратный отсчёт
           for i in $(seq 1 $DURATION); do
             sleep 60
-            [ $((i % 15)) -eq 0 ] && echo "⏳ $i / $DURATION мин"
+            if [ $((i % 15)) -eq 0 ]; then
+              echo "⏳ Прошло $i / $DURATION минут | Осталось: $((DURATION - i)) мин"
+            fi
           done
+          
+          echo "⏰ Время работы истекло"
       
-      - name: Cleanup
+      - name: Stop Server
         if: always()
-        run: pkill -f RustDedicated; pkill -f ngrok
+        run: |
+          echo "🛑 Останавливаем сервер..."
+          pkill -f RustDedicated 2>/dev/null || true
+          pkill -f frpc 2>/dev/null || true
+          echo "✅ Готово!"
