@@ -34,14 +34,12 @@ jobs:
           echo "SERVER_PATH=$SERVER_PATH" >> $GITHUB_ENV
           echo "📁 Путь: $SERVER_PATH"
       
-      - name: Start Rust Server FIRST (before FRP)
+      - name: Start Rust Server and detect port
         run: |
           cd "$SERVER_PATH"
           chmod +x RustDedicated
           
-          echo "🚀 Запускаем сервер..."
-          # ВАЖНО: запускаем сначала сервер, потом FRP
-          # Добавлены параметры для стабильности
+          echo "🚀 Запускаем сервер на порту 28015..."
           ./RustDedicated -batchmode -nographics \
             +server.ip 0.0.0.0 \
             +server.port 28015 \
@@ -56,23 +54,18 @@ jobs:
             +server.seed 12345 \
             +server.level "Barren" \
             +server.saveinterval 600 \
-            +server.secure 0 \
-            +server.encryption 0 2>&1 | tee server.log &
+            +server.secure 0 2>&1 | tee server.log &
           
           SERVER_PID=$!
           echo "Server PID: $SERVER_PID"
           
-          # Ждём ПОЛНОЙ загрузки (6 минут)
-          echo "⏳ Ждём полную загрузку сервера (6 минут)..."
+          # Ждём загрузки (6 минут)
+          echo "⏳ Ждём загрузку сервера (6 минут)..."
           for i in {1..6}; do
             sleep 60
             echo "⏳ Прошло $i минут..."
             
-            # Проверяем порты каждую минуту
-            echo "📡 Проверка портов:"
-            ss -tlnp 2>/dev/null | grep -E "28015|28016|28017" || netstat -tlnp 2>/dev/null | grep -E "28015|28016|28017" || echo "Порты пока не открыты"
-            
-            # Проверяем, жив ли сервер
+            # Проверяем жив ли сервер
             if ! ps -p $SERVER_PID > /dev/null; then
               echo "❌ Сервер упал!"
               tail -n 100 server.log
@@ -82,34 +75,45 @@ jobs:
           
           echo "✅ Сервер работает 6 минут!"
           
-          # Финальная проверка портов
+          # Находим реальный порт, который открыл сервер
           echo ""
-          echo "=== 🔍 ФИНАЛЬНАЯ ПРОВЕРКА ПОРТОВ ==="
-          ss -tlnp | grep RustDedicated || netstat -tlnp | grep RustDedicated || echo "Не удалось проверить порты"
+          echo "=== 🔍 ПОИСК РЕАЛЬНОГО ПОРТА ==="
           
-          # Проверяем конкретно порт 28015
+          # Ищем все порты RustDedicated
+          PORTS=$(ss -tlnp 2>/dev/null | grep RustDedicated | awk '{print $4}' | cut -d: -f2 | sort -u)
+          echo "Найденные порты: $PORTS"
+          
+          # Ищем игровой порт (не 28016 query, не 28017 rcon)
+          GAME_PORT=$(echo "$PORTS" | grep -v -E "28016|28017" | head -1)
+          
+          if [ -z "$GAME_PORT" ]; then
+            echo "❌ Не найден игровой порт!"
+            echo "Все порты: $PORTS"
+            exit 1
+          fi
+          
+          echo "✅ Игровой порт найден: $GAME_PORT"
+          echo "GAME_PORT=$GAME_PORT" >> $GITHUB_ENV
+          
+          # Проверяем, что порт работает
           echo ""
-          echo "Проверка 28015:"
-          (echo > /dev/tcp/127.0.0.1/28015) 2>/dev/null && echo "✅ Порт 28015 ОТКРЫТ" || echo "❌ Порт 28015 ЗАКРЫТ - проблема!"
+          echo "Проверка порта $GAME_PORT:"
+          (echo > /dev/tcp/127.0.0.1/$GAME_PORT) 2>/dev/null && echo "✅ Порт $GAME_PORT открыт" || echo "❌ Порт закрыт"
       
-      - name: Setup FRP tunnel (AFTER server is ready)
+      - name: Setup FRP tunnel with detected port
         run: |
-          echo "🔧 Скачиваем FRP..."
+          cd $GITHUB_WORKSPACE
+          
+          GAME_PORT=${{ env.GAME_PORT }}
+          echo "🌐 Настраиваем FRP для порта $GAME_PORT..."
+          
+          # Скачиваем FRP
           wget -q https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_linux_amd64.tar.gz
           tar -xzf frp_0.52.3_linux_amd64.tar.gz
           cd frp_0.52.3_linux_amd64
           
-          # Проверяем, что сервер действительно слушает 28015
-          echo "🔍 Проверяем, что сервер слушает 28015:"
-          if ! (echo > /dev/tcp/127.0.0.1/28015) 2>/dev/null; then
-            echo "❌ Сервер НЕ слушает порт 28015!"
-            echo "Логи сервера:"
-            tail -n 50 ../server.log
-            exit 1
-          fi
-          echo "✅ Порт 28015 доступен, запускаем FRP..."
-          
-          cat > frpc.toml << 'EOF'
+          # Конфигурация с реальным портом
+          cat > frpc.toml << EOF
           serverAddr = "frp.freefrp.net"
           serverPort = 7000
           auth.token = "freefrp.net"
@@ -118,53 +122,47 @@ jobs:
           name = "rust_tcp"
           type = "tcp"
           localIP = "127.0.0.1"
-          localPort = 28015
+          localPort = $GAME_PORT
           remotePort = 28015
           EOF
           
+          echo "🚀 Запускаем FRP..."
           ./frpc -c frpc.toml > frpc.log 2>&1 &
           sleep 20
           
           echo "📋 Логи FRP:"
           tail -n 20 frpc.log
           
-          # Проверяем, нет ли ошибок соединения
-          if grep -q "connection refused" frpc.log; then
-            echo "❌ FRP не может подключиться к серверу!"
-            exit 1
-          fi
-          
+          # Проверяем успех
           if grep -q "start proxy success" frpc.log; then
-            echo "✅ FRP туннель создан успешно!"
+            echo "✅ FRP туннель создан!"
           else
-            echo "⚠️ Проверь логи FRP выше"
+            echo "⚠️ Проверь логи выше"
           fi
           
           echo ""
           echo "╔════════════════════════════════════════════════╗"
           echo "║  🎮 SERVER READY FOR CONNECTION                ║"
           echo "╠════════════════════════════════════════════════╣"
-          echo "║  Адрес: frp.freefrp.net:28015                  ║"
+          echo "║  Локальный порт: $GAME_PORT                      ║"
+          echo "║  Внешний адрес: frp.freefrp.net:28015          ║"
           echo "║  Команда: client.connect frp.freefrp.net:28015 ║"
           echo "╚════════════════════════════════════════════════╝"
       
-      - name: Monitor and wait
+      - name: Monitor server
         run: |
           cd "$SERVER_PATH"
           
           DURATION=${{ github.event.inputs.duration || '90' }}
-          REMAINING=$((DURATION - 8))  # 8 минут уже прошло
+          REMAINING=$((DURATION - 8))
           
-          echo "⏱️ Работаем ещё $REMAINING минут..."
+          echo "⏱️ Работаем $REMAINING минут..."
           
           # Показываем логи 2 минуты
           timeout 120 tail -f server.log 2>/dev/null || sleep 120
           
-          # Оставшее время
+          # Ждём оставшееся время
           REMAINING=$((REMAINING - 2))
-          echo ""
-          echo "⏱️ Осталось $REMAINING минут..."
-          
           for i in $(seq 1 $REMAINING); do
             sleep 60
             if [ $((i % 10)) -eq 0 ]; then
