@@ -34,67 +34,14 @@ jobs:
           echo "SERVER_PATH=$SERVER_PATH" >> $GITHUB_ENV
           echo "📁 Путь: $SERVER_PATH"
       
-      - name: Check GitHub Actions IP and network
-        run: |
-          echo "🌐 Информация о сети:"
-          echo "IP адрес:"
-          curl -s ifconfig.me || curl -s icanhazip.com || echo "Не удалось получить IP"
-          echo ""
-          echo "Проверка доступности портов:"
-          ss -tlnp | grep -E "(28015|28016|28017)" || echo "Порты пока не заняты"
-      
-      - name: Setup FRP tunnel
-        run: |
-          echo "🔧 Скачиваем FRP..."
-          wget -q https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_linux_amd64.tar.gz
-          tar -xzf frp_0.52.3_linux_amd64.tar.gz
-          cd frp_0.52.3_linux_amd64
-          
-          # Пробуем другой бесплатный сервер (если freefrp не работает)
-          cat > frpc.toml << 'EOF'
-          serverAddr = "frp.freefrp.net"
-          serverPort = 7000
-          auth.token = "freefrp.net"
-          
-          [[proxies]]
-          name = "rust_tcp"
-          type = "tcp"
-          localIP = "127.0.0.1"
-          localPort = 28015
-          remotePort = 28015
-          EOF
-          
-          echo "🚀 Запускаем FRP..."
-          ./frpc -c frpc.toml > frpc.log 2>&1 &
-          sleep 25
-          
-          echo "📋 Логи FRP:"
-          cat frpc.log | tail -20
-          
-          # Проверяем, что туннель действительно работает
-          echo ""
-          echo "🔍 Проверяем туннель..."
-          if grep -q "start proxy success" frpc.log; then
-            echo "✅ FRP сообщает об успехе"
-          else
-            echo "❌ FRP не смог создать туннель"
-            echo "Все логи FRP:"
-            cat frpc.log
-            exit 1
-          fi
-          
-          # Проверяем локальный порт
-          echo ""
-          echo "🔍 Проверка локального порта 28015:"
-          ss -tlnp | grep 28015 || netstat -tlnp 2>/dev/null | grep 28015 || echo "Порт 28015 пока не слушается (нормально, сервер ещё не запущен)"
-      
-      - name: Start Rust Server with debug logging
+      - name: Start Rust Server FIRST (before FRP)
         run: |
           cd "$SERVER_PATH"
           chmod +x RustDedicated
           
           echo "🚀 Запускаем сервер..."
-          # Запускаем с полным логированием сети
+          # ВАЖНО: запускаем сначала сервер, потом FRP
+          # Добавлены параметры для стабильности
           ./RustDedicated -batchmode -nographics \
             +server.ip 0.0.0.0 \
             +server.port 28015 \
@@ -109,115 +56,129 @@ jobs:
             +server.seed 12345 \
             +server.level "Barren" \
             +server.saveinterval 600 \
-            +server.log 1 2>&1 | tee server.log &
+            +server.secure 0 \
+            +server.encryption 0 2>&1 | tee server.log &
           
           SERVER_PID=$!
           echo "Server PID: $SERVER_PID"
           
-          # Ждём инициализации
-          echo "⏳ Ждём 4 минуты..."
-          for i in {1..4}; do
+          # Ждём ПОЛНОЙ загрузки (6 минут)
+          echo "⏳ Ждём полную загрузку сервера (6 минут)..."
+          for i in {1..6}; do
             sleep 60
             echo "⏳ Прошло $i минут..."
             
-            # Проверяем жив ли сервер
+            # Проверяем порты каждую минуту
+            echo "📡 Проверка портов:"
+            ss -tlnp 2>/dev/null | grep -E "28015|28016|28017" || netstat -tlnp 2>/dev/null | grep -E "28015|28016|28017" || echo "Порты пока не открыты"
+            
+            # Проверяем, жив ли сервер
             if ! ps -p $SERVER_PID > /dev/null; then
               echo "❌ Сервер упал!"
               tail -n 100 server.log
               exit 1
             fi
-            
-            # Проверяем порты
-            echo "📡 Проверка портов:"
-            ss -tlnp 2>/dev/null | grep -E "28015|28016|28017" || echo "ss не доступен"
           done
           
-          echo "✅ Сервер запущен 4 минуты!"
+          echo "✅ Сервер работает 6 минут!"
           
-          # Проверяем, что порт действительно слушает
+          # Финальная проверка портов
           echo ""
           echo "=== 🔍 ФИНАЛЬНАЯ ПРОВЕРКА ПОРТОВ ==="
-          echo "Проверяем 28015:"
-          (echo > /dev/tcp/127.0.0.1/28015) 2>/dev/null && echo "✅ Порт 28015 открыт локально" || echo "❌ Порт 28015 недоступен локально"
+          ss -tlnp | grep RustDedicated || netstat -tlnp | grep RustDedicated || echo "Не удалось проверить порты"
           
+          # Проверяем конкретно порт 28015
           echo ""
-          echo "Процессы:"
-          ps aux | grep -E "RustDedicated|frpc" | grep -v grep
-          
-          echo ""
-          echo "=== 📋 ЛОГИ СЕРВЕРА (сетевые) ==="
-          grep -E "IP|Network|Socket|Bind|Listen|Steam|query" server.log | tail -30 || tail -n 50 server.log
+          echo "Проверка 28015:"
+          (echo > /dev/tcp/127.0.0.1/28015) 2>/dev/null && echo "✅ Порт 28015 ОТКРЫТ" || echo "❌ Порт 28015 ЗАКРЫТ - проблема!"
       
-      - name: Test connection and show final info
+      - name: Setup FRP tunnel (AFTER server is ready)
         run: |
-          cd "$SERVER_PATH"
+          echo "🔧 Скачиваем FRP..."
+          wget -q https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_linux_amd64.tar.gz
+          tar -xzf frp_0.52.3_linux_amd64.tar.gz
+          cd frp_0.52.3_linux_amd64
+          
+          # Проверяем, что сервер действительно слушает 28015
+          echo "🔍 Проверяем, что сервер слушает 28015:"
+          if ! (echo > /dev/tcp/127.0.0.1/28015) 2>/dev/null; then
+            echo "❌ Сервер НЕ слушает порт 28015!"
+            echo "Логи сервера:"
+            tail -n 50 ../server.log
+            exit 1
+          fi
+          echo "✅ Порт 28015 доступен, запускаем FRP..."
+          
+          cat > frpc.toml << 'EOF'
+          serverAddr = "frp.freefrp.net"
+          serverPort = 7000
+          auth.token = "freefrp.net"
+          
+          [[proxies]]
+          name = "rust_tcp"
+          type = "tcp"
+          localIP = "127.0.0.1"
+          localPort = 28015
+          remotePort = 28015
+          EOF
+          
+          ./frpc -c frpc.toml > frpc.log 2>&1 &
+          sleep 20
+          
+          echo "📋 Логи FRP:"
+          tail -n 20 frpc.log
+          
+          # Проверяем, нет ли ошибок соединения
+          if grep -q "connection refused" frpc.log; then
+            echo "❌ FRP не может подключиться к серверу!"
+            exit 1
+          fi
+          
+          if grep -q "start proxy success" frpc.log; then
+            echo "✅ FRP туннель создан успешно!"
+          else
+            echo "⚠️ Проверь логи FRP выше"
+          fi
           
           echo ""
           echo "╔════════════════════════════════════════════════╗"
-          echo "║  🎮 ПОПЫТКА ПОДКЛЮЧЕНИЯ                        ║"
+          echo "║  🎮 SERVER READY FOR CONNECTION                ║"
           echo "╠════════════════════════════════════════════════╣"
+          echo "║  Адрес: frp.freefrp.net:28015                  ║"
+          echo "║  Команда: client.connect frp.freefrp.net:28015 ║"
+          echo "╚════════════════════════════════════════════════╝"
+      
+      - name: Monitor and wait
+        run: |
+          cd "$SERVER_PATH"
           
-          # Проверяем доступность через FRP
-          echo "🔍 Тестируем соединение через FRP..."
-          timeout 5 bash -c "echo > /dev/tcp/frp.freefrp.net/28015" 2>/dev/null && echo "✅ FRP порт отвечает" || echo "⚠️ FRP порт не отвечает (может быть нормально)"
-          
-          echo ""
-          echo "Адрес для подключения:"
-          echo "👉 client.connect frp.freefrp.net:28015"
-          echo ""
-          echo "Если не подключается:"
-          echo "1. Проверь, что сервер полностью загрузился (жди 5 минут)"
-          echo "2. Попробуй переподключиться несколько раз"
-          echo "3. Бесплатные FRP сервера могут быть перегружены"
-          echo ""
-          
-          # Продолжаем работу
           DURATION=${{ github.event.inputs.duration || '90' }}
-          REMAINING=$((DURATION - 5))
+          REMAINING=$((DURATION - 8))  # 8 минут уже прошло
           
           echo "⏱️ Работаем ещё $REMAINING минут..."
-          echo "📋 Логи сервера в реальном времени (Ctrl+C чтобы пропустить):"
           
-          # Показываем логи 2 минуты, потом просто ждём
+          # Показываем логи 2 минуты
           timeout 120 tail -f server.log 2>/dev/null || sleep 120
           
           # Оставшее время
           REMAINING=$((REMAINING - 2))
           echo ""
-          echo "⏱️ Осталось $REMAINING минут, сервер работает..."
+          echo "⏱️ Осталось $REMAINING минут..."
           
           for i in $(seq 1 $REMAINING); do
             sleep 60
             if [ $((i % 10)) -eq 0 ]; then
-              echo "⏳ Прошло $((5 + 2 + i)) / $DURATION минут"
-              # Проверяем жив ли
+              echo "⏳ Прошло $((8 + 2 + i)) / $DURATION минут"
               if ! pgrep -f RustDedicated > /dev/null; then
                 echo "❌ Сервер упал!"
-                tail -n 50 server.log
                 exit 1
               fi
             fi
           done
       
-      - name: Final diagnostics and cleanup
+      - name: Cleanup
         if: always()
         run: |
-          echo "=== 📋 ФИНАЛЬНАЯ ДИАГНОСТИКА ==="
-          
-          if [ -f "$SERVER_PATH/server.log" ]; then
-            echo "Последние ошибки в логах:"
-            grep -iE "error|exception|fail|disconnect|timeout|refused" "$SERVER_PATH/server.log" | tail -20 || echo "Нет явных ошибок"
-            
-            echo ""
-            echo "Все сетевые сообщения:"
-            grep -iE "network|socket|bind|listen|connect|steam" "$SERVER_PATH/server.log" | tail -30 || echo "Нет сетевых сообщений"
-          fi
-          
-          echo ""
-          echo "Логи FRP:"
-          tail -n 20 frp_0.52.3_linux_amd64/frpc.log 2>/dev/null || echo "FRP логи недоступны"
-          
-          echo ""
           echo "🛑 Останавливаем..."
           pkill -f RustDedicated 2>/dev/null || true
           pkill -f frpc 2>/dev/null || true
