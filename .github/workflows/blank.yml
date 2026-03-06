@@ -23,64 +23,34 @@ jobs:
       
       - name: Download server from Release
         run: |
-          echo "⬇️ Скачиваем сервер из Release v1.0..."
-          echo "Размер: 1.61 GB, ожидайте 5-10 минут..."
-          
-          curl -L \
-            --max-time 900 \
-            --retry 3 \
-            --retry-delay 10 \
-            --progress-bar \
+          echo "⬇️ Скачиваем сервер..."
+          curl -L --max-time 900 --retry 3 --progress-bar \
             "https://github.com/fakerplayers/govno1337/releases/download/v1.0/linux236dev.1.zip" \
-            -o server.zip 2>&1 | tail -30
+            -o server.zip 2>&1 | tail -20
           
-          echo ""
-          echo "✅ Скачано:"
           ls -lh server.zip
-          file server.zip
-          
           SIZE=$(stat -c%s server.zip)
-          echo "📦 Размер: $((SIZE / 1024 / 1024)) MB"
-          
           if [ $SIZE -lt 1000000000 ]; then
             echo "❌ Файл слишком маленький!"
             exit 1
           fi
-          echo "✅ Готово к распаковке!"
+          echo "✅ Скачано: $((SIZE / 1024 / 1024)) MB"
       
       - name: Extract server
         run: |
-          echo "📦 Распаковываем архив..."
           mkdir -p server
           unzip -q server.zip -d server/
-          
-          echo "✅ Распаковано!"
-          
           SERVER_PATH=$(find server/ -name "RustDedicated" -type f -exec dirname {} \; | head -1)
-          
-          if [ -z "$SERVER_PATH" ]; then
-            echo "❌ RustDedicated не найден!"
-            echo "Структура:"
-            find server/ -type f | head -20
-            exit 1
-          fi
-          
           echo "SERVER_PATH=$SERVER_PATH" >> $GITHUB_ENV
-          echo "📁 Путь к серверу: $SERVER_PATH"
-          ls -la "$SERVER_PATH/"
+          echo "📁 Путь: $SERVER_PATH"
       
       - name: Setup FRP tunnel
         run: |
           echo "🔧 Скачиваем FRP..."
-          cd $GITHUB_WORKSPACE
-          
           wget -q https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_linux_amd64.tar.gz
           tar -xzf frp_0.52.3_linux_amd64.tar.gz
           cd frp_0.52.3_linux_amd64
           
-          echo "🌐 Подключаемся к бесплатному FRP серверу..."
-          
-          # Конфигурация для бесплатного сервера
           cat > frpc.toml << 'EOF'
           serverAddr = "frp.freefrp.net"
           serverPort = 7000
@@ -94,60 +64,40 @@ jobs:
           remotePort = 28015
           EOF
           
-          echo "🚀 Запускаем FRP клиент..."
           ./frpc -c frpc.toml > frpc.log 2>&1 &
-          FRP_PID=$!
-          echo "FRP PID: $FRP_PID"
-          
           sleep 20
           
-          # Проверяем логи
           echo "📋 Логи FRP:"
-          tail -n 20 frpc.log
-          
-          # Проверяем, что процесс жив
-          if ps -p $FRP_PID > /dev/null; then
-            echo "✅ FRP запущен"
-          else
-            echo "❌ FRP упал!"
-            exit 1
-          fi
+          tail -n 10 frpc.log
           
           echo ""
           echo "╔════════════════════════════════════════════════╗"
-          echo "║  🎮 SERVER READY FOR CONNECTION                ║"
+          echo "║  🎮 TUNNEL READY                               ║"
           echo "╠════════════════════════════════════════════════╣"
           echo "║  Адрес: frp.freefrp.net:28015                  ║"
-          echo "║  (или проверь логи выше для точного адреса)    ║"
           echo "╚════════════════════════════════════════════════╝"
-          echo ""
-          echo "👉 Введи в консоли Rust: client.connect frp.freefrp.net:28015"
-          
-          # Сохраняем PID для остановки
-          echo "FRP_PID=$FRP_PID" >> $GITHUB_ENV
       
       - name: Start Rust Server
         run: |
           cd "$SERVER_PATH"
-          
-          # Права на выполнение
           chmod +x RustDedicated
-          chmod +x runds.sh 2>/dev/null || true
           
-          echo "🚀 Запускаем сервер..."
+          echo "🚀 Запускаем сервер с внешним IP..."
+          # ВАЖНО: +server.ip 0.0.0.0 чтобы принимать внешние подключения!
           ./RustDedicated -batchmode -nographics \
+            +server.ip 0.0.0.0 \
             +server.port 28015 \
             +server.queryport 28016 \
             +rcon.port 28017 \
             +rcon.password "test12345" \
             +rcon.web 1 \
             +server.hostname "GitHub Test 236" \
-            +server.description "Test server for plugins" \
+            +server.description "Test server" \
             +server.maxplayers 2 \
             +server.worldsize 1000 \
             +server.seed 12345 \
             +server.level "Barren" \
-            +server.saveinterval 600 &
+            +server.saveinterval 600 2>&1 | tee server.log &
           
           SERVER_PID=$!
           echo "Server PID: $SERVER_PID"
@@ -157,43 +107,72 @@ jobs:
           sleep 240
           
           # Проверяем, что сервер жив
-          if ps -p $SERVER_PID > /dev/null; then
-            echo "✅ Сервер запущен успешно!"
-          else
+          if ! ps -p $SERVER_PID > /dev/null; then
             echo "❌ Сервер упал!"
-            tail -n 50 oxide/logs/oxide_*.txt 2>/dev/null || true
+            echo "=== ЛОГИ СЕРВЕРА ==="
+            tail -n 100 server.log
             exit 1
           fi
           
-          # Показываем информацию ещё раз
-          echo ""
-          echo "=== 🎮 ИНФОРМАЦИЯ ДЛЯ ПОДКЛЮЧЕНИЯ ==="
-          echo "Адрес: frp.freefrp.net:28015"
-          echo "👉 client.connect frp.freefrp.net:28015"
-          echo ""
+          echo "✅ Сервер запущен!"
           
-          # Проверяем логи FRP на случай если порт другой
-          echo "📋 Актуальные логи FRP:"
-          tail -n 10 $GITHUB_WORKSPACE/frp_0.52.3_linux_amd64/frpc.log | grep -E "(proxy|port|started|login)" || true
+          # Проверяем на каком IP слушает
+          echo ""
+          echo "=== 🔍 ПРОВЕРКА ПОРТОВ ==="
+          netstat -tlnp 2>/dev/null | grep 28015 || ss -tlnp | grep 28015 || echo "netstat не доступен"
+          
+          # Проверяем логи на наличие IP
+          echo ""
+          echo "=== 📋 ЛОГИ СЕРВЕРА (последние 50 строк) ==="
+          tail -n 50 server.log | grep -E "(IP|Steam|Initialized|query|connect|Network)" || tail -n 30 server.log
+          
+          # Проверяем FRP логи
+          echo ""
+          echo "=== 📋 ЛОГИ FRP ==="
+          tail -n 10 $GITHUB_WORKSPACE/frp_0.52.3_linux_amd64/frpc.log
+          
+          echo ""
+          echo "╔════════════════════════════════════════════════╗"
+          echo "║  🎮 SERVER READY FOR CONNECTION                ║"
+          echo "╠════════════════════════════════════════════════╣"
+          echo "║  Адрес: frp.freefrp.net:28015                  ║"
+          echo "║  Команда: client.connect frp.freefrp.net:28015 ║"
+          echo "╚════════════════════════════════════════════════╝"
+          
+          # Показываем логи сервера в реальном времени (первые 5 минут)
+          echo ""
+          echo "📋 Логи сервера (следим 2 минуты):"
+          timeout 120 tail -f server.log || true
           
           DURATION=${{ github.event.inputs.duration || '90' }}
-          echo "⏱️ Сервер будет работать $DURATION минут"
-          echo "🎮 Подключайся и тестируй плагин!"
-          echo "⚠️ Авто-выключение через $DURATION минут"
+          REMAINING=$((DURATION - 6))  # 6 минут уже прошло
+          echo ""
+          echo "⏱️ Осталось работать: $REMAINING минут"
           
-          # Обратный отсчёт
-          for i in $(seq 1 $DURATION); do
+          # Оставшееся время просто ждём
+          for i in $(seq 1 $REMAINING); do
             sleep 60
             if [ $((i % 15)) -eq 0 ]; then
-              echo "⏳ Прошло $i / $DURATION минут | Осталось: $((DURATION - i)) мин"
+              echo "⏳ Прошло $((6 + i)) / $DURATION минут"
+              # Проверяем жив ли сервер
+              if ! ps -p $SERVER_PID > /dev/null; then
+                echo "❌ Сервер упал!"
+                tail -n 50 server.log
+                exit 1
+              fi
             fi
           done
-          
-          echo "⏰ Время работы истекло"
       
-      - name: Stop Server
+      - name: Final logs and cleanup
         if: always()
         run: |
+          echo "=== 📋 ФИНАЛЬНЫЕ ЛОГИ ==="
+          if [ -f "$SERVER_PATH/server.log" ]; then
+            echo "Последние 100 строк логов сервера:"
+            tail -n 100 "$SERVER_PATH/server.log" | grep -E "(Error|Exception|disconnect|connect|Steam|Network)" || tail -n 50 "$SERVER_PATH/server.log"
+          fi
+          
+          echo ""
           echo "🛑 Останавливаем сервер..."
           pkill -f RustDedicated 2>/dev/null || true
           pkill -f frpc 2>/dev/null || true
