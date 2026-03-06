@@ -18,57 +18,40 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 155
     
-    env:
-      NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}  # <-- Добавил сюда!
-    
     steps:
       - uses: actions/checkout@v4
       
       - name: Download server from Release
         run: |
           echo "⬇️ Скачиваем сервер из Release v1.0..."
-          echo "Размер: 1.61 GB, ожидайте 5-10 минут..."
-          
           curl -L \
             --max-time 900 \
             --retry 3 \
-            --retry-delay 10 \
             --progress-bar \
             "https://github.com/fakerplayers/govno1337/releases/download/v1.0/linux236dev.1.zip" \
-            -o server.zip 2>&1 | tail -30
+            -o server.zip 2>&1 | tail -20
           
-          echo ""
           ls -lh server.zip
           file server.zip
           
           SIZE=$(stat -c%s server.zip)
-          echo "📦 Размер: $((SIZE / 1024 / 1024)) MB"
-          
           if [ $SIZE -lt 1000000000 ]; then
             echo "❌ Файл слишком маленький!"
             exit 1
           fi
-          echo "✅ Готово к распаковке!"
+          echo "✅ Скачано: $((SIZE / 1024 / 1024)) MB"
       
       - name: Extract server
         run: |
-          echo "📦 Распаковываем архив..."
           mkdir -p server
           unzip -q server.zip -d server/
-          
           SERVER_PATH=$(find server/ -name "RustDedicated" -type f -exec dirname {} \; | head -1)
-          
-          if [ -z "$SERVER_PATH" ]; then
-            echo "❌ RustDedicated не найден!"
-            find server/ -type f | head -20
-            exit 1
-          fi
-          
           echo "SERVER_PATH=$SERVER_PATH" >> $GITHUB_ENV
-          echo "📁 Путь к серверу: $SERVER_PATH"
-          ls -la "$SERVER_PATH/"
+          echo "📁 Путь: $SERVER_PATH"
       
       - name: Setup Ngrok tunnel
+        env:
+          NGROK_TOKEN: "3AaFVAMGeE8EIfGuE0zcZCKP8Xc_53T7XzATbLepKz3L9KExX"  # <-- Правильный токен
         run: |
           echo "🔧 Устанавливаем ngrok..."
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
@@ -76,21 +59,14 @@ jobs:
           sudo apt update && sudo apt install ngrok -y
           
           echo "🌐 Запускаем туннель..."
-          echo "Token: ${NGROK_AUTHTOKEN:0:10}..."  # Проверка что токен есть
-          
-          ngrok tcp 28015 --authtoken "$NGROK_AUTHTOKEN" &
+          ngrok tcp 28015 --authtoken "$NGROK_TOKEN" &
           sleep 20
           
-          # Проверяем статус
-          echo "Проверяем туннель..."
-          curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' 2>/dev/null || \
-          curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | head -1
-          
+          # Проверяем туннель
           TUNNEL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"tcp://[^"]*"' | head -1)
           
           if [ -z "$TUNNEL" ]; then
-            echo "❌ Туннель не создан! Логи ngrok:"
-            cat ngrok.log 2>/dev/null || true
+            echo "❌ Туннель не создан!"
             exit 1
           fi
           
@@ -101,17 +77,14 @@ jobs:
           echo "║  $TUNNEL"
           echo "╚════════════════════════════════════════════════╝"
           echo ""
-          echo "Для подключения в консоли Rust:"
-          echo "client.connect $(echo $TUNNEL | grep -o 'tcp://[^"]*' | sed 's/tcp:////')"
+          CONNECT_ADDR=$(echo $TUNNEL | sed 's/.*tcp://' | tr -d '"')
+          echo "👉 Введи в консоли Rust: client.connect $CONNECT_ADDR"
       
       - name: Start Rust Server
         run: |
           cd "$SERVER_PATH"
-          
           chmod +x RustDedicated
-          chmod +x runds.sh 2>/dev/null || true
           
-          echo "🚀 Запускаем сервер..."
           ./RustDedicated -batchmode -nographics \
             +server.port 28015 \
             +server.queryport 28016 \
@@ -119,53 +92,35 @@ jobs:
             +rcon.password "test12345" \
             +rcon.web 1 \
             +server.hostname "GitHub Test 236" \
-            +server.description "Test server for plugins" \
+            +server.description "Test server" \
             +server.maxplayers 2 \
             +server.worldsize 1000 \
             +server.seed 12345 \
-            +server.level "Barren" \
-            +server.saveinterval 600 &
+            +server.level "Barren" &
           
-          SERVER_PID=$!
-          echo "PID: $SERVER_PID"
-          
-          echo "⏳ Ждём загрузку сервера (4 минуты)..."
           sleep 240
           
-          if ps -p $SERVER_PID > /dev/null; then
-            echo "✅ Сервер запущен успешно!"
+          if pgrep -f RustDedicated; then
+            echo "✅ Сервер работает!"
           else
-            echo "❌ Сервер упал!"
-            tail -n 50 oxide/logs/oxide_*.txt 2>/dev/null || true
+            echo "❌ Ошибка запуска"
             exit 1
           fi
           
           # Показываем адрес ещё раз
           echo ""
-          echo "=== 🎮 ИНФОРМАЦИЯ ДЛЯ ПОДКЛЮЧЕНИЯ ==="
           TUNNEL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"tcp://[^"]*"' | head -1)
-          echo "$TUNNEL"
-          echo ""
-          echo "Команда для подключения:"
-          echo "client.connect $(echo $TUNNEL | sed 's/.*tcp://' | tr -d '"')"
-          echo ""
+          echo "🎮 $TUNNEL"
+          echo "👉 client.connect $(echo $TUNNEL | sed 's/.*tcp://' | tr -d '"')"
           
           DURATION=${{ github.event.inputs.duration || '90' }}
-          echo "⏱️ Сервер будет работать $DURATION минут"
+          echo "⏱️ Работаем $DURATION минут..."
           
           for i in $(seq 1 $DURATION); do
             sleep 60
-            if [ $((i % 15)) -eq 0 ]; then
-              echo "⏳ Прошло $i / $DURATION минут | Осталось: $((DURATION - i)) мин"
-            fi
+            [ $((i % 15)) -eq 0 ] && echo "⏳ $i / $DURATION мин"
           done
-          
-          echo "⏰ Время работы истекло"
       
-      - name: Stop Server
+      - name: Cleanup
         if: always()
-        run: |
-          echo "🛑 Останавливаем сервер..."
-          pkill -f RustDedicated 2>/dev/null || true
-          pkill -f ngrok 2>/dev/null || true
-          echo "✅ Готово!"
+        run: pkill -f RustDedicated; pkill -f ngrok
