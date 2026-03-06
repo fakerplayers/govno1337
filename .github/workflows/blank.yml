@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 155
     
+    env:
+      NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}  # <-- Добавил сюда!
+    
     steps:
       - uses: actions/checkout@v4
       
@@ -26,7 +29,6 @@ jobs:
           echo "⬇️ Скачиваем сервер из Release v1.0..."
           echo "Размер: 1.61 GB, ожидайте 5-10 минут..."
           
-          # Прямая ссылка на ассет (теперь работает!)
           curl -L \
             --max-time 900 \
             --retry 3 \
@@ -36,20 +38,16 @@ jobs:
             -o server.zip 2>&1 | tail -30
           
           echo ""
-          echo "✅ Скачано:"
           ls -lh server.zip
           file server.zip
           
-          # Проверка размера
           SIZE=$(stat -c%s server.zip)
           echo "📦 Размер: $((SIZE / 1024 / 1024)) MB"
           
           if [ $SIZE -lt 1000000000 ]; then
-            echo "❌ Файл слишком маленький! Содержимое:"
-            head -c 500 server.zip
+            echo "❌ Файл слишком маленький!"
             exit 1
           fi
-          
           echo "✅ Готово к распаковке!"
       
       - name: Extract server
@@ -58,14 +56,10 @@ jobs:
           mkdir -p server
           unzip -q server.zip -d server/
           
-          echo "✅ Распаковано!"
-          
-          # Ищем путь к серверу
           SERVER_PATH=$(find server/ -name "RustDedicated" -type f -exec dirname {} \; | head -1)
           
           if [ -z "$SERVER_PATH" ]; then
             echo "❌ RustDedicated не найден!"
-            echo "Структура:"
             find server/ -type f | head -20
             exit 1
           fi
@@ -75,8 +69,6 @@ jobs:
           ls -la "$SERVER_PATH/"
       
       - name: Setup Ngrok tunnel
-        env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
           echo "🔧 Устанавливаем ngrok..."
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
@@ -84,23 +76,38 @@ jobs:
           sudo apt update && sudo apt install ngrok -y
           
           echo "🌐 Запускаем туннель..."
-          ngrok tcp 28015 --authtoken $NGROK_AUTHTOKEN &
-          sleep 15
+          echo "Token: ${NGROK_AUTHTOKEN:0:10}..."  # Проверка что токен есть
           
-          # Получаем адрес
+          ngrok tcp 28015 --authtoken "$NGROK_AUTHTOKEN" &
+          sleep 20
+          
+          # Проверяем статус
+          echo "Проверяем туннель..."
+          curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' 2>/dev/null || \
+          curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | head -1
+          
           TUNNEL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"tcp://[^"]*"' | head -1)
+          
+          if [ -z "$TUNNEL" ]; then
+            echo "❌ Туннель не создан! Логи ngrok:"
+            cat ngrok.log 2>/dev/null || true
+            exit 1
+          fi
+          
           echo ""
           echo "╔════════════════════════════════════════════════╗"
           echo "║  🎮 SERVER READY FOR CONNECTION                ║"
           echo "╠════════════════════════════════════════════════╣"
           echo "║  $TUNNEL"
           echo "╚════════════════════════════════════════════════╝"
+          echo ""
+          echo "Для подключения в консоли Rust:"
+          echo "client.connect $(echo $TUNNEL | grep -o 'tcp://[^"]*' | sed 's/tcp:////')"
       
       - name: Start Rust Server
         run: |
           cd "$SERVER_PATH"
           
-          # Права на выполнение
           chmod +x RustDedicated
           chmod +x runds.sh 2>/dev/null || true
           
@@ -122,11 +129,9 @@ jobs:
           SERVER_PID=$!
           echo "PID: $SERVER_PID"
           
-          # Ждём инициализации (4 минуты)
           echo "⏳ Ждём загрузку сервера (4 минуты)..."
           sleep 240
           
-          # Проверяем, что сервер жив
           if ps -p $SERVER_PID > /dev/null; then
             echo "✅ Сервер запущен успешно!"
           else
@@ -138,16 +143,16 @@ jobs:
           # Показываем адрес ещё раз
           echo ""
           echo "=== 🎮 ИНФОРМАЦИЯ ДЛЯ ПОДКЛЮЧЕНИЯ ==="
-          curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"tcp://[^"]*"' | head -1
+          TUNNEL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"tcp://[^"]*"' | head -1)
+          echo "$TUNNEL"
+          echo ""
+          echo "Команда для подключения:"
+          echo "client.connect $(echo $TUNNEL | sed 's/.*tcp://' | tr -d '"')"
           echo ""
           
-          # Время работы
           DURATION=${{ github.event.inputs.duration || '90' }}
           echo "⏱️ Сервер будет работать $DURATION минут"
-          echo "🎮 Подключайся и тестируй плагин!"
-          echo "⚠️ Авто-выключение через $DURATION минут"
           
-          # Обратный отсчёт
           for i in $(seq 1 $DURATION); do
             sleep 60
             if [ $((i % 15)) -eq 0 ]; then
