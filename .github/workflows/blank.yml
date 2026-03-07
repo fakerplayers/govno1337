@@ -38,51 +38,16 @@ jobs:
           fi
 
       - name: Setup SSH key
+        env:
+          PORTMAP_KEY: ${{ secrets.PORTMAP_KEY }}
         run: |
-          echo "🔧 Настраиваем SSH ключ..."
+          echo "🔧 Настраиваем SSH ключ из секретов..."
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          cat << 'EOF' > ~/.ssh/portmap_key
-          -----BEGIN OPENSSH PRIVATE KEY-----
-          b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABlwAAAAdzc2gtcn
-          NhAAAAAwEAAQAAAYEAoBtwBMCT/5r6o7IPmxmwxGqX3VzhQqq7UH4i/jadHgCKvnn+o35f
-          foOgA5XWbGf+EqL4KliGpauzQ+MTdA43qkqXxddwy7a+oQEgALJbvGWUP7pUS5mN7OKcvS
-          5NdFSqVFbfiXReOZISqwSwHO4rsELWIVpcs0qAR9pABmwT9V3akijzy+oKHlinpQHpCisT
-          AiqJNGGmSiQgam9o7JCAxXpEPtyG1VW3v8t5sUyJVr9EcUXrJe3FwdxnsJ27ZNRaVYR475
-          GWtGyVeoGfcfkb+EzpvpmgGRqbeqGGLimxMKoJ0tJt11aBBpxTejcs5Ls5ZgpOAD54Aa/A
-          S6DfFhzuCk/5wc6cAKRBtMNEAjnJQqRbYpr5eN9J/liwdwn+WZ5rAybcrsDvRzCiSO8Cua
-          mvEEP0u/WGY/QKRVkbx5mSVm+ko/mFW6Jr8XE7jr4MZ4b16BM5fYBhwAYT6RWgIHoD4HaN
-          KaHofh+8Nyewl2Pl/hMpUzjI0lLJkrYNAQlN/UunAAAFmEChUQJAoVECAAAAB3NzaC1yc2
-          EAAAGBAKAbcATAk/+a+qOyD5sZsMRql91c4UKqu1B+Iv42nR4Air55/qN+X36DoAOV1mxn
-          /hKi+CpYhqWrs0PjE3QON6pKl8XXcMu2vqEBIACyW7xllD+6VEuZjezinL0uTXRUqlRW34
-          l0XjmSEqsEsBzuK7BC1iFaXLNKgEfaQAZsE/Vd2pIo88vqCh5Yp6UB6QorEwIqiTRhpkok
-          IGpvaOyQgMV6RD7chtVVt7/LebFMiVa/RHFF6yXtxcHcZ7Cdu2TUWlWEeO+RlrRslXqBn3
-          H5G/hM6b6ZoBkam3qhhi4psTCqCdLSbddWgQacU3o3LOS7OWYKTgA+eAGvwEug3xYc7gpP
-          +cHOnACkQbTDRAI5yUKkW2Ka+XjfSf5YsHcJ/lmeawMm3K7A70cwokjvArmprxBD9Lv1hm
-          P0CkVZG8eZklZvpKP5hVuia/FxO46+DGeG9egTOX2AYcAGE+kVoCB6A+B2jSmh6H4fvDcn
-          sJdj5f4TKVM4yNJSyZK2DQEJTf1LpwAAAAMBAAEAAAGAJw8KgN5KPK0eQBkMXZYi3YfzjH
-          lAKvdjwvtCpinEorEXJ+izCkemHEMYIkfHi6LDBODlEc+O6ZO9o+4drM5bHhwccpNgXRIz
-          5ytTF1hrsMZHKFTYg6juSr/t5OkK1DpjYzfeSLYu1nSgQUBfhm9EETf87R4SR1sBeIXx4J
-          81L0K6M7Xx4+kwlr6iB0s0AtsHRBwEZNb9rlCp581OF4gZIhP12jAKZLkInq2Q/oPhbVwz
-          4j5gY1xiRizyzs9sC+kRzaxSIAsf1rqJ8001Sn1zyPQZrTxh9tLv5uvLL9kKW+my72nnOD
-          BdN2ROvJMf/AsNI9iVKXaXScgyvqc20v4btI67PcX+JQX/+Lbkhsrz/zDPax7QyVYx/lCY
-          9yVd86g54HB3b/p4KPAxNoWiMmFskMFucaNQcWOHIhUyfT2uynK+k7J/skDbQvVEc5Qw68
-          AUQcOLvSWrDmz+EHLU+YeAjzEkT2QgC5r9OrxVBZ+nOJXMDdiCv3089p78EiNGF9xhAAAA
-          wQCUs0YAriLmnC4XEqAaCPgucG8Fy9rORmDs9YGmJkD2y5DHqdboXhaDy1fwEZwS1XInMI
-          9NwnqbX+nq9AXkzwPrxsnSx/0ojKxsuzrmziljSVC6aAiHj5PV7m0AeCKILGb4dosLXYj9
-          SeVHEwHkH2mKOltAwxbbXrYSITJmEVMah74JJKdYnnvpRX56pG/HFAEIscgPk6qpRdjbL2
-          pxrxD3mmQpnOf3oKXPIqWzzmQbyZr1G8YPz2fDxcqKpq7WAHYAAADBANS6jSVoLZyB+aSO
-          9Oe78JET2UpuTF2KNfrI/aGYZZ396GBataFyynolOBIlqggMcmBBdzMbq8H+v7UC/foGPU
-          WsMt38i/uVb7XYR3fyO/4p89MEcoPYEoEbYPpEBL+bq1dctLN511gglApCUvlI6FRg5UIx
-          ypCaO7IBJipoXISiBkmL8xVpxqkdzLr3rL/jvM6K7Kp9VjoMcx2BpITV/nCwstfEJIsT6/
-          Ap7zB9Z+6ndZqZhhi7z56uoj6Fm2zfkwAAAMEAwKy356r7SRE4BPj/WCxqpOcrNFgsa31U
-          oAC4yHLmrpitscw4h35NcyRSqnTXOgQib9ILvHzF91NKpXHKZsDzdqd+sx/RdeiA7nnLMj
-          GrytT1dAbnDW58mfp+bGXFE6/ydrPhirYmY2OK1m7maKSDTIsLx7XOhWWYTBN9haQ1GeS
-          2XtqXD60uJf5SRnBldD0BsT+WrUH/8sveJ8ausKqs5KO7T1l7mLXbE5lVWeJIwDLrk0kPP
-          PWuqSMPS1LAygdAAAAImZha2VycGxheWVycy5ydXN0c2VydmVyQHBvcnRtYXAuaW8=
-          -----END OPENSSH PRIVATE KEY-----
-          EOF
+          echo "$PORTMAP_KEY" > ~/.ssh/portmap_key
           chmod 600 ~/.ssh/portmap_key
           echo "✅ Ключ готов"
+
+
 
       - name: Start server
         run: |
