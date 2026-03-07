@@ -27,47 +27,51 @@ jobs:
         run: |
           echo "🔧 Устанавливаем CloudPub..."
           
-          # Скачиваем CLI версию для Linux x86_64
-          wget -q https://cloudpub.ru/download/cloudpub-linux-amd64 -O cloudpub
-          chmod +x cloudpub
+          # Скачиваем по правильной ссылке
+          wget -q https://cloudpub.ru/download/stable/clo-3.0.1-stable-linux-x86_64.tar.gz -O cloudpub.tar.gz
+          tar -xzf cloudpub.tar.gz
           
-          # Авторизация по токену
+          # Ищем бинарник (обычно называется clo или cloudpub)
+          CLO_BIN=$(find . -name "clo" -o -name "cloudpub" | head -1)
+          if [ -z "$CLO_BIN" ]; then
+            echo "❌ Бинарник не найден после распаковки"
+            ls -la
+            exit 1
+          fi
+          
+          chmod +x "$CLO_BIN"
+          mv "$CLO_BIN" cloudpub
+          
+          echo "✅ CloudPub установлен"
+          
+          # Авторизация
           ./cloudpub auth "$CLOUDPUB_TOKEN"
-          
-          echo "✅ CloudPub авторизован"
 
-      - name: Start server and CloudPub tunnel
+      - name: Start server and tunnel
         run: |
           cd "$SERVER_PATH"
           chmod +x RustDedicated
           
           # Запускаем сервер
           ./RustDedicated -batchmode -nographics \
-            +server.ip 0.0.0.0 \
-            +server.port 28015 \
-            +server.queryport 28016 \
-            +rcon.port 28017 \
-            +rcon.password "test12345" \
-            +rcon.web 1 \
-            +server.hostname "Test" \
-            +server.maxplayers 2 \
-            +server.worldsize 1000 \
-            +server.seed 12345 \
-            +server.level Barren &
+            +server.ip 0.0.0.0 +server.port 28015 +server.queryport 28016 \
+            +rcon.port 28017 +rcon.password "test12345" +rcon.web 1 \
+            +server.hostname "Test" +server.maxplayers 2 \
+            +server.worldsize 1000 +server.seed 12345 +server.level Barren &
           
           echo "⏳ Ждём 4 минуты..."
           sleep 240
           
-          # Запускаем туннель CloudPub для TCP порта 28015
+          # Запускаем туннель
           echo "🌐 Запускаем CloudPub туннель..."
-          $GITHUB_WORKSPACE/cloudpub tcp 28015 --name rust236 &
+          $GITHUB_WORKSPACE/cloudpub tcp 28015 --name rust236 2>&1 | tee cloudpub.log &
           
-          sleep 10
+          sleep 15
+          echo "📋 Логи CloudPub:"
+          tail -20 cloudpub.log
           
-          # Получаем адрес (обычно показывается в выводе)
           echo ""
-          echo "🎮 Проверь логи выше для адреса подключения"
-          echo "Обычно формат: rust236.cloudpub.ru:XXXXX"
+          echo "🎮 Подключайся по адресу из логов выше"
           
           # Ждём
           sleep ${{ github.event.inputs.duration || 90 }}m
