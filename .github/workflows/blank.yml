@@ -10,102 +10,68 @@ on:
 jobs:
   run-server:
     runs-on: ubuntu-latest
-    timeout-minutes: 160
+    timeout-minutes: 155
     
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y lib32gcc-s1 lib32stdc++6 curl jq unzip wget
-
+      
       - name: Download server
         run: |
-          echo "⬇️ Скачиваем сервер..."
           curl -L -o server.zip "https://github.com/fakerplayers/govno1337/releases/download/v1.0/linux236dev.1.zip"
           unzip -q server.zip -d server/
-          SERVER_PATH=$(find server/ -name RustDedicated -exec dirname {} \; | head -1)
-          echo "SERVER_PATH=$SERVER_PATH" >> $GITHUB_ENV
-          echo "📁 Путь к серверу: $SERVER_PATH"
+          echo "SERVER_PATH=$(find server/ -name RustDedicated -exec dirname {} \;)" >> $GITHUB_ENV
 
-      - name: Setup Plugins
+      - name: Setup CloudPub
+        env:
+          CLOUDPUB_TOKEN: ${{ secrets.CLOUDPUB_TOKEN }}
         run: |
-          mkdir -p "$SERVER_PATH/oxide/plugins"
-          if [ -d "plugins" ]; then
-            cp -v plugins/*.cs "$SERVER_PATH/oxide/plugins/" || echo "Плагины не найдены"
-          fi
-
-      - name: Install and start playit
-        run: |
-          echo "🌐 Установка Playit.gg..."
-          curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg >/dev/null
-          echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
-          sudo apt-get update
-          sudo apt-get install -y playit
+          echo "🔧 Устанавливаем CloudPub..."
           
-          # Запускаем и ждём claim code
-          echo "🚀 Запуск агента Playit..."
-          playit 2>&1 | tee playit.log &
+          # Скачиваем CLI версию для Linux x86_64
+          wget -q https://cloudpub.ru/download/cloudpub-linux-amd64 -O cloudpub
+          chmod +x cloudpub
           
-          echo "⏳ Ожидание ссылки для активации (20 сек)..."
-          sleep 20
+          # Авторизация по токену
+          ./cloudpub auth "$CLOUDPUB_TOKEN"
           
-          echo "=== ПОЛНЫЙ ЛОГ PLAYIT ==="
-          cat playit.log
-          echo "========================="
+          echo "✅ CloudPub авторизован"
 
-          echo ""
-          echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║ 🔗 ССЫЛКА ДЛЯ АКТИВАЦИИ PLAYIT:                              ║"
-          grep -oi "https://playit.gg/claim/[A-Z0-9-]*" playit.log || echo "║ (ссылка не найдена, проверь полный лог выше)           ║"
-          echo "╚══════════════════════════════════════════════════════════════╝"
-          echo ""
-
-      - name: Start server
+      - name: Start server and CloudPub tunnel
         run: |
           cd "$SERVER_PATH"
           chmod +x RustDedicated
           
-          echo "🚀 Запускаем сервер Rust..."
+          # Запускаем сервер
           ./RustDedicated -batchmode -nographics \
-            +server.ip 0.0.0.0 +server.port 28015 +server.queryport 28016 \
-            +rcon.port 28017 +rcon.password "test12345" +rcon.web 1 \
-            +server.hostname "GitHub Test (Playit)" +server.maxplayers 10 \
-            +server.worldsize 1000 +server.seed 12345 +server.level "Procedural Map" \
-            +server.secure 0 &
+            +server.ip 0.0.0.0 \
+            +server.port 28015 \
+            +server.queryport 28016 \
+            +rcon.port 28017 \
+            +rcon.password "test12345" \
+            +rcon.web 1 \
+            +server.hostname "Test" \
+            +server.maxplayers 2 \
+            +server.worldsize 1000 \
+            +server.seed 12345 \
+            +server.level Barren &
           
-          echo "SERVER_PID=$!" >> $GITHUB_ENV
-          echo "⏳ Ждём 4 минуты для первичной загрузки..."
+          echo "⏳ Ждём 4 минуты..."
           sleep 240
-
-      - name: Monitor server and playit
-        run: |
-          DURATION=${{ github.event.inputs.duration || 90 }}
-          echo "⏱️ Мониторинг на $DURATION минут..."
           
-          for i in $(seq 1 $DURATION); do
-            sleep 60
-            
-            if ! pgrep -f playit > /dev/null; then
-              echo "❌ Агент Playit упал!"
-              exit 1
-            fi
-            
-            if ! pgrep -f RustDedicated > /dev/null; then
-              echo "❌ Сервер Rust упал!"
-              exit 1
-            fi
-
-            if [ $((i % 5)) -eq 0 ]; then
-              echo "⏳ Прошло $i / $DURATION минут"
-            fi
-          done
+          # Запускаем туннель CloudPub для TCP порта 28015
+          echo "🌐 Запускаем CloudPub туннель..."
+          $GITHUB_WORKSPACE/cloudpub tcp 28015 --name rust236 &
+          
+          sleep 10
+          
+          # Получаем адрес (обычно показывается в выводе)
+          echo ""
+          echo "🎮 Проверь логи выше для адреса подключения"
+          echo "Обычно формат: rust236.cloudpub.ru:XXXXX"
+          
+          # Ждём
+          sleep ${{ github.event.inputs.duration || 90 }}m
 
       - name: Stop
         if: always()
-        run: |
-          echo "🛑 Остановка..."
-          pkill -f RustDedicated || true
-          pkill -f playit || true
+        run: pkill -f RustDedicated; pkill -f cloudpub
