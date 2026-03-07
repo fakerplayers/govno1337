@@ -10,23 +10,79 @@ on:
 jobs:
   run-server:
     runs-on: ubuntu-latest
-    timeout-minutes: 155
+    timeout-minutes: 160
     
     steps:
       - uses: actions/checkout@v4
-      
+
+      - name: Install dependencies
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y lib32gcc-s1 lib32stdc++6 curl jq unzip wget
+
       - name: Download server
         run: |
+          echo "⬇️ Скачиваем сервер..."
           curl -L -o server.zip "https://github.com/fakerplayers/govno1337/releases/download/v1.0/linux236dev.1.zip"
           unzip -q server.zip -d server/
-          echo "SERVER_PATH=$(find server/ -name RustDedicated -exec dirname {} \;)" >> $GITHUB_ENV
+          SERVER_PATH=$(find server/ -name RustDedicated -exec dirname {} \; | head -1)
+          echo "SERVER_PATH=$SERVER_PATH" >> $GITHUB_ENV
+          echo "📁 Путь к серверу: $SERVER_PATH"
+
+      - name: Setup Plugins
+        run: |
+          mkdir -p "$SERVER_PATH/oxide/plugins"
+          if [ -d "plugins" ]; then
+            cp -v plugins/*.cs "$SERVER_PATH/oxide/plugins/" || echo "Плагины не найдены"
+          fi
 
       - name: Setup SSH key
-        env:
-          PORTMAP_KEY: ${{ secrets.PORTMAP_KEY }}
         run: |
+          echo "🔧 Настраиваем SSH ключ..."
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          echo "$PORTMAP_KEY" > ~/.ssh/portmap_key && chmod 600 ~/.ssh/portmap_key
+          cat << 'EOF' > ~/.ssh/portmap_key
+          -----BEGIN OPENSSH PRIVATE KEY-----
+          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
+          -----END OPENSSH PRIVATE KEY-----
+          EOF
+          chmod 600 ~/.ssh/portmap_key
+          echo "✅ Ключ готов"
 
       - name: Start server
         run: |
@@ -36,17 +92,19 @@ jobs:
           ./RustDedicated -batchmode -nographics \
             +server.ip 0.0.0.0 +server.port 28015 +server.queryport 28016 \
             +rcon.port 28017 +rcon.password "test12345" +rcon.web 1 \
-            +server.hostname "Test" +server.maxplayers 2 \
-            +server.worldsize 1000 +server.seed 12345 +server.level Barren &
+            +server.hostname "GitHub Test" +server.maxplayers 10 \
+            +server.worldsize 1000 +server.seed 12345 +server.level "Procedural Map" \
+            +server.secure 0 &
           
-          echo "⏳ Ждём 4 минуты..."
+          echo "🚀 Сервер запущен в фоновом режиме."
+          echo "⏳ Ждём 4 минуты для первичной загрузки..."
           sleep 240
 
       - name: Start SSH tunnel with debug
         run: |
           echo "🌐 Запускаем SSH туннель..."
           
-          # Запускаем с выводом ошибок в лог
+          # Запускаем в фоне и пишем лог
           ssh -vvv -i ~/.ssh/portmap_key \
               -o StrictHostKeyChecking=no \
               -o UserKnownHostsFile=/dev/null \
@@ -59,46 +117,54 @@ jobs:
               2>&1 | tee ssh.log &
           
           SSH_PID=$!
-          echo "SSH PID: $SSH_PID"
+          echo "SSH_PID=$SSH_PID" >> $GITHUB_ENV
           
           sleep 15
           
-          # Проверяем жив ли SSH
           if ps -p $SSH_PID > /dev/null; then
-            echo "✅ SSH процесс жив"
+            echo "✅ SSH процесс запущен (PID: $SSH_PID)"
           else
             echo "❌ SSH упал сразу!"
             cat ssh.log
             exit 1
           fi
-          
-          # Проверяем порт
-          echo ""
-          echo "🔍 Проверяем туннель..."
+
+          echo "🔍 Проверка перенаправления..."
           if grep -q "Forwarding success" ssh.log; then
-            echo "✅ Туннель создан успешно!"
+            echo "✅ Туннель успешно активирован!"
           else
-            echo "⚠️ Проверяем логи SSH:"
-            tail -20 ssh.log
+            echo "⚠️ Логи SSH (последние 20 строк):"
+            tail -n 20 ssh.log
           fi
           
-          echo ""
-          echo "🎮 Подключайся: client.connect fakerplayers-32718.portmap.host:32718"
-          
-          # Ждём указанное время, проверяя SSH каждые 5 минут
+          echo "🎮 client.connect fakerplayers-32718.portmap.host:32718"
+
+      - name: Monitor server and tunnel
+        run: |
           DURATION=${{ github.event.inputs.duration || 90 }}
+          echo "⏱️ Мониторинг на $DURATION минут..."
+          
           for i in $(seq 1 $DURATION); do
             sleep 60
-            if ! ps -p $SSH_PID > /dev/null 2>&1; then
+            if ! ps -p ${{ env.SSH_PID }} > /dev/null 2>&1; then
               echo "❌ SSH упал на $i минуте!"
-              tail -30 ssh.log
+              tail -n 30 ssh.log
               exit 1
             fi
+            
+            if ! pgrep -f RustDedicated > /dev/null; then
+              echo "❌ Сервер Rust упал!"
+              exit 1
+            fi
+
             if [ $((i % 5)) -eq 0 ]; then
-              echo "⏳ Работаем $i / $DURATION минут"
+              echo "⏳ Прошло $i / $DURATION минут"
             fi
           done
 
       - name: Stop
         if: always()
-        run: pkill -f RustDedicated; pkill -f ssh
+        run: |
+          echo "🛑 Остановка..."
+          pkill -f RustDedicated || true
+          pkill -f ssh || true
