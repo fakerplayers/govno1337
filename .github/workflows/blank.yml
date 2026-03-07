@@ -36,10 +36,9 @@ jobs:
           
           echo "✅ CloudPub установлен"
           
-          # Авторизация через set token
           ./cloudpub set token "$CLOUDPUB_TOKEN"
 
-      - name: Start server and tunnel
+      - name: Start server and UDP tunnel
         run: |
           cd "$SERVER_PATH"
           chmod +x RustDedicated
@@ -54,9 +53,9 @@ jobs:
           echo "⏳ Ждём 4 минуты..."
           sleep 240
           
-          # Запускаем туннель (TCP вместо HTTP!)
-          echo "🌐 Запускаем CloudPub туннель..."
-          $GITHUB_WORKSPACE/cloudpub publish tcp 28015 --name rust236 2>&1 | tee cloudpub.log &
+          # Запускаем UDP туннель (для Rust игровой порт UDP!)
+          echo "🌐 Запускаем CloudPub UDP туннель..."
+          $GITHUB_WORKSPACE/cloudpub publish udp 28015 --name rust236 2>&1 | tee cloudpub.log &
           
           sleep 15
           echo "📋 Логи CloudPub:"
