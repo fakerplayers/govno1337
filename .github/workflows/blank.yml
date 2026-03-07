@@ -34,25 +34,39 @@ jobs:
           echo "SERVER_PATH=$SERVER_PATH" >> $GITHUB_ENV
           echo "📁 Путь: $SERVER_PATH"
       
-      - name: Setup SSH key and Portmap tunnel
+      - name: Setup SSH key for Portmap
         env:
           PORTMAP_KEY: ${{ secrets.PORTMAP_KEY }}
         run: |
-          echo "🔧 Настраиваем SSH ключ для Portmap.io..."
-          
-          # Создаём папку .ssh
+          echo "🔧 Настраиваем SSH ключ..."
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          
-          # Записываем ключ
           echo "$PORTMAP_KEY" > ~/.ssh/portmap_key
           chmod 600 ~/.ssh/portmap_key
+          echo "✅ Ключ готов"
+      
+      - name: Start Portmap SSH tunnel FIRST
+        run: |
+          echo "🌐 Открываем туннель Portmap.io..."
+          echo "Адрес: fakerplayers-32718.portmap.host:32718 -> localhost:28015"
           
-          # Добавляем хост в known_hosts
-          ssh-keyscan -p 32718 fakerplayers-32718.portmap.host >> ~/.ssh/known_hosts 2>/dev/null || \
-          ssh-keyscan fakerplayers-32718.portmap.host >> ~/.ssh/known_hosts 2>/dev/null || true
+          # Запускаем SSH туннель (он будет ждать пока порт 28015 не откроется)
+          ssh -i ~/.ssh/portmap_key \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ServerAliveInterval=60 \
+              -o ServerAliveCountMax=3 \
+              -p 32718 \
+              -R 32718:localhost:28015 \
+              -N \
+              fakerplayers.rustserver@fakerplayers-32718.portmap.host &
           
-          echo "✅ SSH ключ настроен"
+          SSH_PID=$!
+          echo "SSH PID: $SSH_PID"
+          echo "SSH_TUNNEL_PID=$SSH_PID" >> $GITHUB_ENV
+          
+          sleep 10
+          echo "✅ Туннель запущен (ждёт сервер на порту 28015)"
       
       - name: Start Rust Server
         run: |
@@ -90,54 +104,23 @@ jobs:
               tail -n 100 server.log
               exit 1
             fi
+            
+            # Проверяем, что SSH туннель ещё жив
+            if ! ps -p ${{ env.SSH_TUNNEL_PID }} > /dev/null 2>&1; then
+              echo "⚠️ SSH туннель упал, перезапускаем..."
+              ssh -i ~/.ssh/portmap_key \
+                  -o StrictHostKeyChecking=no \
+                  -o UserKnownHostsFile=/dev/null \
+                  -o ServerAliveInterval=60 \
+                  -p 32718 \
+                  -R 32718:localhost:28015 \
+                  -N \
+                  fakerplayers.rustserver@fakerplayers-32718.portmap.host &
+              echo "SSH_TUNNEL_PID=$!" >> $GITHUB_ENV
+            fi
           done
           
-          # Проверяем порт
-          echo ""
-          echo "=== 🔍 Проверка порта 28015 ==="
-          if (echo > /dev/tcp/127.0.0.1/28015) 2>/dev/null; then
-            echo "✅ Порт 28015 открыт!"
-          else
-            echo "❌ Порт 28015 закрыт, ищем другой..."
-            ss -tlnp | grep RustDedicated || netstat -tlnp | grep RustDedicated
-            exit 1
-          fi
-      
-      - name: Start Portmap SSH tunnel
-        run: |
-          echo "🌐 Запускаем SSH туннель Portmap.io..."
-          echo "Адрес: fakerplayers-32718.portmap.host:32718 -> localhost:28015"
-          
-          # Запускаем SSH туннель в фоне
-          ssh -i ~/.ssh/portmap_key \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o ExitOnForwardFailure=yes \
-              -p 32718 \
-              -R 32718:localhost:28015 \
-              -N \
-              fakerplayers.rustserver@fakerplayers-32718.portmap.host &
-          
-          SSH_PID=$!
-          echo "SSH PID: $SSH_PID"
-          
-          # Ждём установки туннеля
-          sleep 15
-          
-          # Проверяем, что SSH жив
-          if ps -p $SSH_PID > /dev/null; then
-            echo "✅ SSH туннель запущен!"
-          else
-            echo "❌ SSH упал, пробуем ещё раз..."
-            ssh -i ~/.ssh/portmap_key \
-                -o StrictHostKeyChecking=no \
-                -o UserKnownHostsFile=/dev/null \
-                -p 32718 \
-                -R 32718:localhost:28015 \
-                -N \
-                fakerplayers.rustserver@fakerplayers-32718.portmap.host &
-            sleep 15
-          fi
+          echo "✅ Сервер запущен!"
           
           echo ""
           echo "╔════════════════════════════════════════════════╗"
@@ -156,7 +139,6 @@ jobs:
           REMAINING=$((DURATION - 7))
           
           echo "⏱️ Работаем $REMAINING минут..."
-          echo "📋 Логи сервера (Ctrl+C чтобы пропустить):"
           
           # Показываем логи 3 минуты
           timeout 180 tail -f server.log 2>/dev/null || sleep 180
@@ -164,17 +146,20 @@ jobs:
           # Оставшее время
           REMAINING=$((REMAINING - 3))
           echo ""
-          echo "⏱️ Осталось $REMAINING минут, сервер работает..."
+          echo "⏱️ Осталось $REMAINING минут..."
           
           for i in $(seq 1 $REMAINING); do
             sleep 60
             if [ $((i % 10)) -eq 0 ]; then
               echo "⏳ Прошло $((7 + 3 + i)) / $DURATION минут"
-              # Проверяем процессы
+              
+              # Проверяем сервер
               if ! pgrep -f RustDedicated > /dev/null; then
                 echo "❌ Сервер упал!"
                 exit 1
               fi
+              
+              # Проверяем SSH туннель
               if ! pgrep -f "ssh.*portmap" > /dev/null; then
                 echo "⚠️ SSH туннель упал, перезапускаем..."
                 ssh -i ~/.ssh/portmap_key \
