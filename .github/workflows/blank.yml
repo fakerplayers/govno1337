@@ -1,103 +1,197 @@
-name: Rust Server 236 Test
+name: Test Rust Server 236
 
 on:
-  workflow_dispatch: # Ручной запуск
-  push:
-    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Время работы (минуты)'
+        default: '90'
+        type: choice
+        options:
+          - 60
+          - 90
+          - 120
+          - 150
 
 jobs:
   run-server:
     runs-on: ubuntu-latest
+    timeout-minutes: 155
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
+      - uses: actions/checkout@v4
+      
+      - name: Download and extract server
         run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y lib32gcc-s1 lib32stdc++6 curl jq unzip wget
-
-      - name: Download Rust Server Release
+          echo "⬇️ Скачиваем сервер..."
+          curl -L --max-time 900 --retry 3 --progress-bar \
+            "https://github.com/fakerplayers/govno1337/releases/download/v1.0/linux236dev.1.zip" \
+            -o server.zip 2>&1 | tail -10
+          
+          mkdir -p server
+          unzip -q server.zip -d server/
+          SERVER_PATH=$(find server/ -name "RustDedicated" -type f -exec dirname {} \; | head -1)
+          echo "SERVER_PATH=$SERVER_PATH" >> $GITHUB_ENV
+          echo "📁 Путь: $SERVER_PATH"
+      
+      - name: Setup SSH key and Portmap tunnel
         env:
-          GH_TOKEN: ${{ github.token }}
+          PORTMAP_KEY: ${{ secrets.PORTMAP_KEY }}
         run: |
-          gh release download --pattern 'linux236dev.1.zip' --output server.zip
-          unzip server.zip -d ./rust_server
-          chmod +x ./rust_server/RustDedicated
-          # Создаем папки для плагинов (Oxide)
-          mkdir -p ./rust_server/oxide/plugins
-
-      - name: Setup Plugins
-        run: |
-          # Копируем ваши плагины из репозитория (предположим, они лежат в папке plugins/)
-          if [ -d "plugins" ]; then
-            cp -r plugins/*.cs ./rust_server/oxide/plugins/ || echo "No .cs plugins found"
-          fi
-
-      - name: Setup Portmap SSH Tunnel
-        run: |
+          echo "🔧 Настраиваем SSH ключ для Portmap.io..."
+          
+          # Создаём папку .ssh
           mkdir -p ~/.ssh
-          cat << 'EOF' > ~/.ssh/id_rsa
-          -----BEGIN OPENSSH PRIVATE KEY-----
-          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
-          -----END OPENSSH PRIVATE KEY-----
-          EOF
-          chmod 600 ~/.ssh/id_rsa
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa fakerplayers.rustserver@fakerplayers-32718.portmap.host -N -R 32718:localhost:28015 &
-          echo "Portmap SSH tunnel started using hardcoded key."
-
-
-      - name: Run Rust Server
+          chmod 700 ~/.ssh
+          
+          # Записываем ключ
+          echo "$PORTMAP_KEY" > ~/.ssh/portmap_key
+          chmod 600 ~/.ssh/portmap_key
+          
+          # Добавляем хост в known_hosts
+          ssh-keyscan -p 32718 fakerplayers-32718.portmap.host >> ~/.ssh/known_hosts 2>/dev/null || \
+          ssh-keyscan fakerplayers-32718.portmap.host >> ~/.ssh/known_hosts 2>/dev/null || true
+          
+          echo "✅ SSH ключ настроен"
+      
+      - name: Start Rust Server
         run: |
-          cd rust_server
+          cd "$SERVER_PATH"
+          chmod +x RustDedicated
+          
+          echo "🚀 Запускаем сервер..."
           ./RustDedicated -batchmode -nographics \
             +server.ip 0.0.0.0 \
             +server.port 28015 \
-            +server.level "Procedural Map" \
-            +server.seed 1234 \
-            +server.worldsize 3000 \
-            +server.maxplayers 10 \
-            +server.hostname "GHA Test Server" \
-            +server.identity "testing" \
-            +rcon.port 28016 \
-            +rcon.password "password" \
+            +server.queryport 28016 \
+            +rcon.port 28017 \
+            +rcon.password "test12345" \
             +rcon.web 1 \
-            -logfile "server_console.log"
-        timeout-minutes: 60
+            +server.hostname "GitHub Test 236" \
+            +server.description "Test server" \
+            +server.maxplayers 2 \
+            +server.worldsize 1000 \
+            +server.seed 12345 \
+            +server.level "Barren" \
+            +server.saveinterval 600 \
+            +server.secure 0 2>&1 | tee server.log &
+          
+          SERVER_PID=$!
+          echo "Server PID: $SERVER_PID"
+          
+          # Ждём загрузки (6 минут)
+          echo "⏳ Ждём загрузку сервера (6 минут)..."
+          for i in {1..6}; do
+            sleep 60
+            echo "⏳ Прошло $i минут..."
+            
+            if ! ps -p $SERVER_PID > /dev/null; then
+              echo "❌ Сервер упал!"
+              tail -n 100 server.log
+              exit 1
+            fi
+          done
+          
+          # Проверяем порт
+          echo ""
+          echo "=== 🔍 Проверка порта 28015 ==="
+          if (echo > /dev/tcp/127.0.0.1/28015) 2>/dev/null; then
+            echo "✅ Порт 28015 открыт!"
+          else
+            echo "❌ Порт 28015 закрыт, ищем другой..."
+            ss -tlnp | grep RustDedicated || netstat -tlnp | grep RustDedicated
+            exit 1
+          fi
+      
+      - name: Start Portmap SSH tunnel
+        run: |
+          echo "🌐 Запускаем SSH туннель Portmap.io..."
+          echo "Адрес: fakerplayers-32718.portmap.host:32718 -> localhost:28015"
+          
+          # Запускаем SSH туннель в фоне
+          ssh -i ~/.ssh/portmap_key \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ExitOnForwardFailure=yes \
+              -p 32718 \
+              -R 32718:localhost:28015 \
+              -N \
+              fakerplayers.rustserver@fakerplayers-32718.portmap.host &
+          
+          SSH_PID=$!
+          echo "SSH PID: $SSH_PID"
+          
+          # Ждём установки туннеля
+          sleep 15
+          
+          # Проверяем, что SSH жив
+          if ps -p $SSH_PID > /dev/null; then
+            echo "✅ SSH туннель запущен!"
+          else
+            echo "❌ SSH упал, пробуем ещё раз..."
+            ssh -i ~/.ssh/portmap_key \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -p 32718 \
+                -R 32718:localhost:28015 \
+                -N \
+                fakerplayers.rustserver@fakerplayers-32718.portmap.host &
+            sleep 15
+          fi
+          
+          echo ""
+          echo "╔════════════════════════════════════════════════╗"
+          echo "║  🎮 SERVER READY FOR CONNECTION                ║"
+          echo "╠════════════════════════════════════════════════╣"
+          echo "║  Адрес: fakerplayers-32718.portmap.host:32718  ║"
+          echo "║  Команда:                                      ║"
+          echo "║  client.connect fakerplayers-32718.portmap.host:32718 ║"
+          echo "╚════════════════════════════════════════════════╝"
+      
+      - name: Monitor server
+        run: |
+          cd "$SERVER_PATH"
+          
+          DURATION=${{ github.event.inputs.duration || '90' }}
+          REMAINING=$((DURATION - 7))
+          
+          echo "⏱️ Работаем $REMAINING минут..."
+          echo "📋 Логи сервера (Ctrl+C чтобы пропустить):"
+          
+          # Показываем логи 3 минуты
+          timeout 180 tail -f server.log 2>/dev/null || sleep 180
+          
+          # Оставшее время
+          REMAINING=$((REMAINING - 3))
+          echo ""
+          echo "⏱️ Осталось $REMAINING минут, сервер работает..."
+          
+          for i in $(seq 1 $REMAINING); do
+            sleep 60
+            if [ $((i % 10)) -eq 0 ]; then
+              echo "⏳ Прошло $((7 + 3 + i)) / $DURATION минут"
+              # Проверяем процессы
+              if ! pgrep -f RustDedicated > /dev/null; then
+                echo "❌ Сервер упал!"
+                exit 1
+              fi
+              if ! pgrep -f "ssh.*portmap" > /dev/null; then
+                echo "⚠️ SSH туннель упал, перезапускаем..."
+                ssh -i ~/.ssh/portmap_key \
+                    -o StrictHostKeyChecking=no \
+                    -o UserKnownHostsFile=/dev/null \
+                    -p 32718 \
+                    -R 32718:localhost:28015 \
+                    -N \
+                    fakerplayers.rustserver@fakerplayers-32718.portmap.host &
+              fi
+            fi
+          done
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "🛑 Останавливаем..."
+          pkill -f RustDedicated 2>/dev/null || true
+          pkill -f "ssh.*portmap" 2>/dev/null || true
+          echo "✅ Готово!"
