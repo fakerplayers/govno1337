@@ -37,83 +37,56 @@ jobs:
             cp -v plugins/*.cs "$SERVER_PATH/oxide/plugins/" || echo "Плагины не найдены"
           fi
 
-      - name: Setup SSH key
-        env:
-          PORTMAP_KEY: ${{ secrets.PORTMAP_KEY }}
+      - name: Install and start playit
         run: |
-          echo "🔧 Настраиваем SSH ключ из секретов..."
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          echo "$PORTMAP_KEY" > ~/.ssh/portmap_key
-          chmod 600 ~/.ssh/portmap_key
-          echo "✅ Ключ готов"
-
-
+          echo "🌐 Установка Playit.gg..."
+          curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg >/dev/null
+          echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
+          sudo apt-get update
+          sudo apt-get install -y playit
+          
+          # Запускаем и ждём claim code
+          echo "🚀 Запуск агента Playit..."
+          playit 2>&1 | tee playit.log &
+          
+          echo "⏳ Ожидание ссылки для активации..."
+          sleep 15
+          cat playit.log
+          
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║ 🔗 ССЫЛКА ДЛЯ АКТИВАЦИИ PLAYIT:                              ║"
+          grep -o "https://playit.gg/claim/[A-Z0-9-]*" playit.log || echo "║ (ссылка не найдена, проверь логи выше)                 ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
 
       - name: Start server
         run: |
           cd "$SERVER_PATH"
           chmod +x RustDedicated
           
+          echo "🚀 Запускаем сервер Rust..."
           ./RustDedicated -batchmode -nographics \
             +server.ip 0.0.0.0 +server.port 28015 +server.queryport 28016 \
             +rcon.port 28017 +rcon.password "test12345" +rcon.web 1 \
-            +server.hostname "GitHub Test" +server.maxplayers 10 \
+            +server.hostname "GitHub Test (Playit)" +server.maxplayers 10 \
             +server.worldsize 1000 +server.seed 12345 +server.level "Procedural Map" \
             +server.secure 0 &
           
-          echo "🚀 Сервер запущен в фоновом режиме."
+          echo "SERVER_PID=$!" >> $GITHUB_ENV
           echo "⏳ Ждём 4 минуты для первичной загрузки..."
           sleep 240
 
-      - name: Start SSH tunnel with debug
-        run: |
-          echo "🌐 Запускаем SSH туннель..."
-          
-          # Запускаем в фоне и пишем лог
-          ssh -vvv -i ~/.ssh/portmap_key \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o ExitOnForwardFailure=yes \
-              -o ServerAliveInterval=30 \
-              -o ServerAliveCountMax=3 \
-              -N \
-              -R 32718:localhost:28015 \
-              fakerplayers.rustserver@fakerplayers-32718.portmap.host \
-              2>&1 | tee ssh.log &
-          
-          SSH_PID=$!
-          echo "SSH_PID=$SSH_PID" >> $GITHUB_ENV
-          
-          sleep 15
-          
-          if ps -p $SSH_PID > /dev/null; then
-            echo "✅ SSH процесс запущен (PID: $SSH_PID)"
-          else
-            echo "❌ SSH упал сразу!"
-            cat ssh.log
-            exit 1
-          fi
-
-          echo "🔍 Проверка перенаправления..."
-          if grep -q "Forwarding success" ssh.log; then
-            echo "✅ Туннель успешно активирован!"
-          else
-            echo "⚠️ Логи SSH (последние 20 строк):"
-            tail -n 20 ssh.log
-          fi
-          
-          echo "🎮 client.connect fakerplayers-32718.portmap.host:32718"
-
-      - name: Monitor server and tunnel
+      - name: Monitor server and playit
         run: |
           DURATION=${{ github.event.inputs.duration || 90 }}
           echo "⏱️ Мониторинг на $DURATION минут..."
           
           for i in $(seq 1 $DURATION); do
             sleep 60
-            if ! ps -p ${{ env.SSH_PID }} > /dev/null 2>&1; then
-              echo "❌ SSH упал на $i минуте!"
-              tail -n 30 ssh.log
+            
+            if ! pgrep -f playit > /dev/null; then
+              echo "❌ Агент Playit упал!"
               exit 1
             fi
             
@@ -132,4 +105,4 @@ jobs:
         run: |
           echo "🛑 Остановка..."
           pkill -f RustDedicated || true
-          pkill -f ssh || true
+          pkill -f playit || true
