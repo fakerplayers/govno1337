@@ -28,12 +28,11 @@ jobs:
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           echo "$PORTMAP_KEY" > ~/.ssh/portmap_key && chmod 600 ~/.ssh/portmap_key
 
-      - name: Start server and tunnel
+      - name: Start server
         run: |
           cd "$SERVER_PATH"
           chmod +x RustDedicated
           
-          # Запускаем сервер
           ./RustDedicated -batchmode -nographics \
             +server.ip 0.0.0.0 +server.port 28015 +server.queryport 28016 \
             +rcon.port 28017 +rcon.password "test12345" +rcon.web 1 \
@@ -42,20 +41,63 @@ jobs:
           
           echo "⏳ Ждём 4 минуты..."
           sleep 240
+
+      - name: Start SSH tunnel with debug
+        run: |
+          echo "🌐 Запускаем SSH туннель..."
           
-          # Запускаем SSH туннель
-          ssh -i ~/.ssh/portmap_key \
+          # Запускаем с выводом ошибок в лог
+          ssh -vvv -i ~/.ssh/portmap_key \
               -o StrictHostKeyChecking=no \
               -o UserKnownHostsFile=/dev/null \
+              -o ExitOnForwardFailure=yes \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=3 \
               -N \
               -R 32718:localhost:28015 \
-              fakerplayers.rustserver@fakerplayers-32718.portmap.host &
+              fakerplayers.rustserver@fakerplayers-32718.portmap.host \
+              2>&1 | tee ssh.log &
+          
+          SSH_PID=$!
+          echo "SSH PID: $SSH_PID"
+          
+          sleep 15
+          
+          # Проверяем жив ли SSH
+          if ps -p $SSH_PID > /dev/null; then
+            echo "✅ SSH процесс жив"
+          else
+            echo "❌ SSH упал сразу!"
+            cat ssh.log
+            exit 1
+          fi
+          
+          # Проверяем порт
+          echo ""
+          echo "🔍 Проверяем туннель..."
+          if grep -q "Forwarding success" ssh.log; then
+            echo "✅ Туннель создан успешно!"
+          else
+            echo "⚠️ Проверяем логи SSH:"
+            tail -20 ssh.log
+          fi
           
           echo ""
           echo "🎮 Подключайся: client.connect fakerplayers-32718.portmap.host:32718"
           
-          # Ждём
-          sleep ${{ github.event.inputs.duration || 90 }}m
+          # Ждём указанное время, проверяя SSH каждые 5 минут
+          DURATION=${{ github.event.inputs.duration || 90 }}
+          for i in $(seq 1 $DURATION); do
+            sleep 60
+            if ! ps -p $SSH_PID > /dev/null 2>&1; then
+              echo "❌ SSH упал на $i минуте!"
+              tail -30 ssh.log
+              exit 1
+            fi
+            if [ $((i % 5)) -eq 0 ]; then
+              echo "⏳ Работаем $i / $DURATION минут"
+            fi
+          done
 
       - name: Stop
         if: always()
